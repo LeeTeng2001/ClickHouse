@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# Tags: no-parallel
-# Tag no-parallel: the pool is keyed on host, port, credentials and pool size, none of which a test
-# database makes unique, so concurrent copies queue behind one connection. Measured with 6 copies:
-# 7s on its own, 16s together.
 
 CURDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../shell_config.sh
@@ -17,6 +13,12 @@ CURDIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # earlier run could satisfy the lower bound without this run ever waiting, and could also push the
 # upper bound over its limit.
 QUERY_PREFIX="04659_${CLICKHOUSE_DATABASE}_$(random_str 8)"
+
+# The pool is keyed on host, port, user and pool size, so a user of its own keeps concurrent runs out
+# of each other's pool.
+POOL_USER="u_${QUERY_PREFIX}"
+${CLICKHOUSE_CLIENT} --query "CREATE USER ${POOL_USER} IDENTIFIED WITH no_password"
+trap '${CLICKHOUSE_CLIENT} --query "DROP USER IF EXISTS ${POOL_USER}"' EXIT
 
 function running() {
     ${CLICKHOUSE_CLIENT} --query "SELECT count() FROM system.processes WHERE query_id IN (${1})"
@@ -50,7 +52,7 @@ function contend() {
     # Sleeps far longer than the handshake below needs, so the connection stays held until the kill
     # frees it. The per block sleep cap is what bounds the row count.
     timeout 60 ${CLICKHOUSE_CLIENT} --query_id "${holder}" --query "
-        SELECT count() FROM remote('127.0.0.1:${CLICKHOUSE_PORT_TCP}', numbers(30)) WHERE sleepEachRow(1)
+        SELECT count() FROM remote('127.0.0.1:${CLICKHOUSE_PORT_TCP}', numbers(30), '${POOL_USER}', '') WHERE sleepEachRow(1)
         SETTINGS prefer_localhost_replica = 0, distributed_connections_pool_size = 1,
                  connection_pool_max_wait_ms = ${wait_ms}, function_sleep_max_microseconds_per_block = 60000000
     " < /dev/null > /dev/null 2>&1 &
@@ -60,7 +62,7 @@ function contend() {
     wait_running 1 "'${holder}'" 60 || echo "the holder never started, so the pool was never full"
 
     timeout 60 ${CLICKHOUSE_CLIENT} --query_id "${waiter}" --query "
-        SELECT count() FROM remote('127.0.0.1:${CLICKHOUSE_PORT_TCP}', numbers(1)) WHERE sleepEachRow(1)
+        SELECT count() FROM remote('127.0.0.1:${CLICKHOUSE_PORT_TCP}', numbers(1), '${POOL_USER}', '') WHERE sleepEachRow(1)
         SETTINGS prefer_localhost_replica = 0, distributed_connections_pool_size = 1,
                  connection_pool_max_wait_ms = ${wait_ms}, function_sleep_max_microseconds_per_block = 60000000
     " < /dev/null > /dev/null 2>&1 &
@@ -194,7 +196,7 @@ function cancel_waiter() {
     # The holder does not wait, so the value is inert for it; it is kept identical to the waiter's so
     # the pair is queueing under one configuration.
     timeout 60 ${CLICKHOUSE_CLIENT} --query_id "${holder}" --query "
-        SELECT count() FROM remote('127.0.0.1:${CLICKHOUSE_PORT_TCP}', numbers(30)) WHERE sleepEachRow(1)
+        SELECT count() FROM remote('127.0.0.1:${CLICKHOUSE_PORT_TCP}', numbers(30), '${POOL_USER}', '') WHERE sleepEachRow(1)
         SETTINGS prefer_localhost_replica = 0, distributed_connections_pool_size = 1,
                  connection_pool_max_wait_ms = ${pool_wait_ms}, function_sleep_max_microseconds_per_block = 60000000
     " < /dev/null > /dev/null 2>&1 &
@@ -207,7 +209,7 @@ function cancel_waiter() {
     [[ ${mode} == soft ]] && limit=", max_execution_time = 5"
 
     timeout 12 ${CLICKHOUSE_CLIENT} --query_id "${waiter}" --query "
-        SELECT count() FROM remote('127.0.0.1:${CLICKHOUSE_PORT_TCP}', numbers(1))
+        SELECT count() FROM remote('127.0.0.1:${CLICKHOUSE_PORT_TCP}', numbers(1), '${POOL_USER}', '')
         SETTINGS prefer_localhost_replica = 0, distributed_connections_pool_size = 1,
                  connection_pool_max_wait_ms = ${pool_wait_ms}${limit}
     " < /dev/null > /dev/null 2>&1 &
