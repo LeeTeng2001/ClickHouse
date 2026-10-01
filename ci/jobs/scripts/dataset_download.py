@@ -39,6 +39,23 @@ def iceberg_database_ddl_commands(server_path):
     return commands
 
 
+def iceberg_s3_database_ddl_commands(server_path):
+    """Attach the shared, immutable TPC-H Iceberg dataset through the job-local S3 endpoint."""
+    metadata = f"{server_path}/db/metadata"
+    database = "tpch_ice10_s3"
+    directory, tables = ICEBERG_DATASETS["tpch_ice10"]
+    commands = [
+        f"mkdir -p {metadata}/{database}",
+        f'echo "ATTACH DATABASE {database} ENGINE=Ordinary" > {metadata}/{database}.sql',
+    ]
+    for table in tables:
+        commands.append(
+            f'echo "ATTACH TABLE {table} ENGINE = IcebergS3(perf_s3_data, filename = '
+            f"'{directory}/{table}/')\" > {metadata}/{database}/{table}.sql"
+        )
+    return commands
+
+
 def download_and_extract_datasets(dataset_urls, target_dir, retries=5):
     """Download dataset tarballs in parallel and extract them into target_dir.
 

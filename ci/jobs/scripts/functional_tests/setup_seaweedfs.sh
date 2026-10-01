@@ -124,6 +124,7 @@ start_seaweedfs() {
   nohup weed server -dir="$data_dir" \
     -master.port=11112 -volume.port=11113 -filer.port=11114 \
     -s3 -s3.port=11111 -s3.config=./seaweedfs_s3.json \
+    -s3.cacheCapacityMB=0 -filer.saveToFilerLimit=0 \
     -master.volumeSizeLimitMB=1024 -volume.max=0 &
   WEED_PID=$!
   echo "weed server started with PID ${WEED_PID}"

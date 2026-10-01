@@ -26,6 +26,7 @@ from ci.jobs.scripts.dataset_download import (
     ICEBERG_DATASETS,
     download_and_extract_datasets,
     iceberg_database_ddl_commands,
+    iceberg_s3_database_ddl_commands,
 )
 from ci.jobs.scripts.perf import s3_service
 from ci.praktika._environment import _Environment
@@ -1338,6 +1339,8 @@ class CHServer:
         if res != 0:
             with open(f"{results_path}/{test_name}-err.log", "w") as f:
                 f.write(err)
+        else:
+            Path(f"{results_path}/{test_name}-err.log").unlink(missing_ok=True)
         with open(f"{results_path}/{test_name}-raw.tsv", "w") as f:
             f.write(out)
         with open(f"{results_path}/wall-clock-times.tsv", "a") as f:
@@ -2207,6 +2210,21 @@ def rebuild_table(port, source, destination):
 
 POPULATE_DONE_MARKER = "test._populate_done"
 
+# These suites only use tpch10 and the local/S3 TPC-H Iceberg datasets. In a
+# filtered run, rebuilding the unrelated hits tables is unnecessary; keep the
+# normal population path for every other selection and for unfiltered CI shards.
+SUITES_WITHOUT_HITS = {
+    "iceberg_suite_local_read.xml",
+    "iceberg_suite_local_rw_features.xml",
+    "iceberg_suite_local_tpch.xml",
+    "iceberg_suite_local_write.xml",
+    "iceberg_suite_s3_dummy.xml",
+    "iceberg_suite_s3_read.xml",
+    "iceberg_suite_s3_rw_features.xml",
+    "iceberg_suite_s3_tpch.xml",
+    "iceberg_suite_s3_write.xml",
+}
+
 # Derived, not hand-maintained: adding a dataset to ICEBERG_DATASETS is enough to protect it from the between-tests user_files wipe.
 PERSISTENT_USER_FILES = {directory for directory, _ in ICEBERG_DATASETS.values()}
 
@@ -2344,6 +2362,10 @@ def main():
     # Content-based, so naturally off for release_base vintages that predate the S3 tests and for shards without them.
     needs_s3 = any(
         s3_service.test_requires_s3(f"./tests/performance/{file}")
+        for file in test_files
+    )
+    needs_s3_read_dataset = any(
+        s3_service.test_requires_read_dataset(f"./tests/performance/{file}")
         for file in test_files
     )
 
@@ -2595,6 +2617,9 @@ def main():
         # Attach the Iceberg datasets as databases, so tests read tpch_ice10.<table> with no create_query of their own.
         commands += iceberg_database_ddl_commands(perf_left)
         commands += iceberg_database_ddl_commands(perf_right)
+        if needs_s3_read_dataset:
+            commands += iceberg_s3_database_ddl_commands(perf_left)
+            commands += iceberg_s3_database_ddl_commands(perf_right)
 
         if needs_s3:
 
@@ -2602,13 +2627,27 @@ def main():
                 # The log lands under perf_wd, so logs.tar.zst picks it up.
                 return s3_service.ensure(f"{perf_wd}/s3_server.log")
 
-            # After the right->left `cp -rv` above: the overrides are the only per-server config delta.
+            commands.append(start_s3)
+            if "iceberg_suite_s3_dummy.xml" in test_files:
+                # DROP TABLE alone cannot remove an orphaned Iceberg object store path
+                # left by a failed prior job; clear just the fixed-path smoke dataset.
+                commands.append(s3_service.clear_dummy_dataset)
+            if needs_s3_read_dataset:
+                # Reuse the tarball already extracted for the local suites. Only the immutable
+                # read dataset is shared; each server's write collection remains isolated.
+                commands.append(
+                    lambda: s3_service.seed_read_dataset(
+                        f"{db_path}/user_files/{s3_service.READ_DATASET_DIRECTORY}"
+                    )
+                )
+
+            # After the right->left `cp -rv` above: the write overrides are the only per-server config delta.
             def write_s3_side_overrides():
                 s3_service.write_side_override(perf_left_config, "left")
                 s3_service.write_side_override(perf_right_config, "right")
                 return True
 
-            commands += [start_s3, write_s3_side_overrides]
+            commands.append(write_s3_side_overrides)
         else:
             print(
                 "No selected test uses the job-local S3 endpoint - skip its provisioning"
@@ -2619,14 +2658,21 @@ def main():
     if res and needs_s3 and JobStages.CONFIGURE not in stages and any(
         stage in stages for stage in (JobStages.RESTART, JobStages.TEST, JobStages.REPORT)
     ):
+        restore_s3 = [lambda: s3_service.ensure(f"{perf_wd}/s3_server.log")]
+        if needs_s3_read_dataset:
+            restore_s3.append(
+                lambda: s3_service.seed_read_dataset(
+                    f"{db_path}/user_files/{s3_service.READ_DATASET_DIRECTORY}"
+                )
+            )
+        restore_s3 += [
+            lambda: s3_service.write_side_override(perf_left_config, "left"),
+            lambda: s3_service.write_side_override(perf_right_config, "right"),
+        ]
         results.append(
             Result.from_commands_run(
                 name="Restore S3 endpoint",
-                command=[
-                    lambda: s3_service.ensure(f"{perf_wd}/s3_server.log"),
-                    lambda: s3_service.write_side_override(perf_left_config, "left"),
-                    lambda: s3_service.write_side_override(perf_right_config, "right"),
-                ],
+                command=restore_s3,
             )
         )
         res = results[-1].is_ok()
@@ -2689,19 +2735,29 @@ def main():
         )
 
     if res and JobStages.RESTART in stages:
-        print("Populate datasets")
+        if test_keyword and all(file in SUITES_WITHOUT_HITS for file in test_files):
+            print("Skip hits population: selected Iceberg suites do not use hits tables")
+        else:
+            print("Populate datasets")
 
-        def populate():
-            return populate_data_both(
-                CHServer.LEFT_SERVER_PORT, CHServer.RIGHT_SERVER_PORT
-            )
+            def populate():
+                return populate_data_both(
+                    CHServer.LEFT_SERVER_PORT, CHServer.RIGHT_SERVER_PORT
+                )
 
-        results.append(Result.from_commands_run(name="Populate", command=[populate]))
-        res = results[-1].is_ok()
+            results.append(Result.from_commands_run(name="Populate", command=[populate]))
+            res = results[-1].is_ok()
 
     if res and JobStages.TEST in stages:
         print("Tests")
         # test_files was selected at the start of the job, where the S3 provisioning decision needs it.
+
+        # A local rerun reuses perf_wd for downloaded datasets. The report scans
+        # all *-raw.tsv and *-err.log files, including tests not selected this
+        # time, so keep only results produced by this invocation.
+        for pattern in ("*-raw.tsv", "*-err.log", "wall-clock-times.tsv"):
+            for old_result in Path(perf_wd).glob(pattern):
+                old_result.unlink()
 
         def cleanup_user_files():
             # Tests can write into user_files (INSERT INTO FUNCTION file(...)) and nothing else removes those files.
@@ -2781,8 +2837,12 @@ def main():
         # `CHPC_CHECK_START_TIMESTAMP` is initialized once at the start of the
         # job - do not reset it here, the export stage has already used it.
 
+        # Local runs use PR_NUMBER=-1 as a sentinel. compare.sh formats the
+        # generated ci-checks.tsv using UInt32, so use the master sentinel (0)
+        # for this local-only report instead of passing a negative PR number.
+        report_pr_number = 0 if info.is_local_run else info.pr_number
         commands = [
-            f"PR_TO_TEST={info.pr_number} "
+            f"PR_TO_TEST={report_pr_number} "
             f"SHA_TO_TEST={info.sha} "
             "stage=get_profiles "
             f"{script_path}",

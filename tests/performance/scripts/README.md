@@ -146,7 +146,10 @@ There are some environment variables that influence what the test does:
  * `-e CHPC_LOCAL_SCRIPT` -- use the comparison scripts from the docker container and not from the tested commit.
 
 #### Re-genarate report with your tweaks
-`compare.sh` rejects tests using `perf_s3`; use the Praktika performance-comparison job to provision the endpoint and isolate the two servers' namespaces.
+`compare.sh` rejects tests using `perf_s3`; use the Praktika performance-comparison job to provision the endpoint.
+The `iceberg_suite_local_*` tests use the downloaded local Iceberg dataset; the `iceberg_suite_s3_*` tests use job-local SeaweedFS.
+The read and TPC-H S3 suites use one shared immutable `perf_s3_data` dataset uploaded from that same download, while S3 write tests use isolated left/right `perf_s3` namespaces.
+SeaweedFS's cross-request S3 chunk cache is disabled; the OS page cache and ClickHouse's intentionally test-controlled metadata cache still apply.
 
 From the workspace directory (extracted test output archive):
 ```

@@ -7,7 +7,7 @@
         <iceberg_delete_data_on_drop>1</iceberg_delete_data_on_drop>
     </settings>
 
-    <!-- WRITE suite: append-only IcebergLocal write paths; each query depends only on setup and its own runs, so CI may sample and shuffle them freely; mutations that rewrite data or change schema live in iceberg_suite_rw_features.xml. -->
+    <!-- Local WRITE suite: append-only IcebergLocal write paths; each query depends only on setup and its own runs, so CI may sample and shuffle them freely; mutations that rewrite data or change schema live in iceberg_suite_local_rw_features.xml. -->
 
     <substitutions>
         <substitution>

@@ -7,7 +7,7 @@
         <iceberg_metadata_log_level>none</iceberg_metadata_log_level>
     </settings>
 
-    <!-- The 22 queries of tpch.xml, unchanged, over the CI-attached `tpch_ice10` Iceberg dataset; nothing is built or dropped here, and `iceberg_delete_data_on_drop` must stay off because the dataset is shared. -->
+    <!-- The 22 queries of tpch.xml, unchanged, over the CI-attached local `tpch_ice10` Iceberg dataset; nothing is built or dropped here, and `iceberg_delete_data_on_drop` must stay off because the dataset is shared. -->
     <substitutions>
         <substitution>
             <name>database</name>
