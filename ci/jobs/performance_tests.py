@@ -2616,6 +2616,21 @@ def main():
         results.append(Result.from_commands_run(name="Configure", command=commands))
         res = results[-1].is_ok()
 
+    if res and needs_s3 and JobStages.CONFIGURE not in stages and any(
+        stage in stages for stage in (JobStages.RESTART, JobStages.TEST, JobStages.REPORT)
+    ):
+        results.append(
+            Result.from_commands_run(
+                name="Restore S3 endpoint",
+                command=[
+                    lambda: s3_service.ensure(f"{perf_wd}/s3_server.log"),
+                    lambda: s3_service.write_side_override(perf_left_config, "left"),
+                    lambda: s3_service.write_side_override(perf_right_config, "right"),
+                ],
+            )
+        )
+        res = results[-1].is_ok()
+
     leftCH = CHServer(is_left=True)
     rightCH = CHServer(is_left=False)
     log_export_servers = (("left", leftCH), ("right", rightCH))

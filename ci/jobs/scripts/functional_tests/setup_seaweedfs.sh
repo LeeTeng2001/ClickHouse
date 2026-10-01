@@ -117,12 +117,19 @@ start_seaweedfs() {
   # weed server also runs master/volume/filer services (each also binds a gRPC
   # port at +10000); keep them next to the S3 port, away from the ports used by
   # clickhouse-server, keeper, azurite and redpanda
-  nohup weed server -dir=./seaweedfs_data \
+  local data_dir=./seaweedfs_data
+  if [ -n "${SEAWEEDFS_PID_FILE:-}" ]; then
+    data_dir="$PWD/seaweedfs_data"
+  fi
+  nohup weed server -dir="$data_dir" \
     -master.port=11112 -volume.port=11113 -filer.port=11114 \
     -s3 -s3.port=11111 -s3.config=./seaweedfs_s3.json \
     -master.volumeSizeLimitMB=1024 -volume.max=0 &
   WEED_PID=$!
   echo "weed server started with PID ${WEED_PID}"
+  if [ -n "${SEAWEEDFS_PID_FILE:-}" ]; then
+    printf '%s\n' "$WEED_PID" > "$SEAWEEDFS_PID_FILE"
+  fi
   wait_for_it
   lsof -i :11111
 }

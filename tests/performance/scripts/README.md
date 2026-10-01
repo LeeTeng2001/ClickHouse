@@ -146,6 +146,8 @@ There are some environment variables that influence what the test does:
  * `-e CHPC_LOCAL_SCRIPT` -- use the comparison scripts from the docker container and not from the tested commit.
 
 #### Re-genarate report with your tweaks
+`compare.sh` rejects tests using `perf_s3`; use the Praktika performance-comparison job to provision the endpoint and isolate the two servers' namespaces.
+
 From the workspace directory (extracted test output archive):
 ```
 stage=report compare.sh
